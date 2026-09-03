@@ -58,7 +58,7 @@ def fetch_players():
 # --- UI Header ---
 col_logo, col_title = st.columns([1, 5])
 with col_logo:
-    st.image("uh_logo.jpeg", width=100)  # Matches filename in your project folder
+    st.image("UH_logo.jpeg", width=100)  # Matches filename in your project folder
 with col_title:
     st.title(" UH Basement Table Tennis Tournament 🏓")
 
