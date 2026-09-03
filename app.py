@@ -66,37 +66,78 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["Leaderboard", "Log Match", "Add Player"
 
 # --- Tab 1: Leaderboard ---
 with tab1:
-    players_df = fetch_players()
-    if players_df.empty:
-        st.info("No players registered yet. Add players in the 'Add Player' tab.")
-    else:
-        players_df["win_pct"] = players_df.apply(
-            lambda r: f"{(r['wins'] / r['games_played'] * 100):.1f}%" if r["games_played"] > 0 else "0.0%",
-            axis=1
+    st.subheader("🏆 UH Table Tennis Leaderboard")
+
+    # Fetch and sort players by Elo (highest first)
+    players_df = get_all_players()  # Uses your existing database query function
+
+    if not players_df.empty:
+        # Sort players by Elo descending
+        sorted_df = players_df.sort_values(by="elo", ascending=False).reset_index(drop=True)
+
+        # 1. Format Ranks with Gold, Silver, Bronze badges
+        rank_labels = []
+        for i in range(1, len(sorted_df) + 1):
+            if i == 1:
+                rank_labels.append("🥇 1")
+            elif i == 2:
+                rank_labels.append("🥈 2")
+            elif i == 3:
+                rank_labels.append("🥉 3")
+            else:
+                rank_labels.append(str(i))
+
+        sorted_df["Rank"] = rank_labels
+
+        # 2. Bold Top 3 Player Names
+        display_df = sorted_df.copy()
+        for idx in range(min(3, len(display_df))):
+            display_df.loc[idx, "name"] = f"**{display_df.loc[idx, 'name']}**"
+
+        # 3. Render Top 10 Table
+        top_10_df = display_df.head(10)[["Rank", "name", "elo", "matches_played"]]
+        top_10_df.columns = ["Rank", "Player", "Elo Rating", "Matches Played"]
+
+        st.markdown("### 🔝 Top 10 Leaderboard")
+        st.dataframe(
+            top_10_df,
+            use_container_width=True,
+            hide_index=True
         )
 
-        display_df = players_df[[
-            "full_name", "elo", "wins", "losses", "games_played", "win_pct", "current_streak"
-        ]].rename(columns={
-            "full_name": "Player",
-            "elo": "Elo Rating",
-            "wins": "Wins",
-            "losses": "Losses",
-            "games_played": "Played",
-            "win_pct": "Win %",
-            "current_streak": "Win Streak"
-        })
+        # 4. Dropdown for Players Ranked 11+
+        if len(sorted_df) > 10:
+            st.divider()
+            st.markdown("### 📊 Lower Rankings (Ranks 11+)")
 
-        st.subheader("🏆 Top 10 Rankings")
-        top_10_df = display_df.head(10).copy()
-        top_10_df.index = range(1, len(top_10_df) + 1)
-        st.dataframe(top_10_df, use_container_width=True)
+            remaining_df = sorted_df.iloc[10:].copy()
 
-        if len(display_df) > 10:
-            with st.expander("See Full Standings"):
-                full_df = display_df.copy()
-                full_df.index = range(1, len(full_df) + 1)
-                st.dataframe(full_df, use_container_width=True)
+            # Format options for the dropdown list
+            dropdown_options = [
+                f"Rank #{row['Rank']} — {row['name']} ({row['elo']} Elo)"
+                for _, row in remaining_df.iterrows()
+            ]
+
+            selected_option = st.selectbox(
+                "Select a player to view details:",
+                options=dropdown_options,
+                index=0
+            )
+
+            # Display quick stats card for the selected player
+            if selected_option:
+                # Extract player name from option string
+                selected_index = dropdown_options.index(selected_option)
+                player_info = remaining_df.iloc[selected_index]
+
+                st.info(
+                    f"**Player:** {player_info['name']} | "
+                    f"**Rank:** #{player_info['Rank']} | "
+                    f"**Elo:** {player_info['elo']} | "
+                    f"**Matches Played:** {player_info['matches_played']}"
+                )
+    else:
+        st.info("No players registered yet. Head to the Registration tab to add players!")
 
 # --- Tab 2: Log Match ---
 with tab2:
