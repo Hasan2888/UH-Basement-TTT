@@ -65,42 +65,109 @@ with col_title:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Leaderboard", "Log Match", "Add Player", "Match History", "Admin"])
 
 # --- Tab 1: Leaderboard ---
+# --- Tab 1: Leaderboard ---
 with tab1:
-    st.subheader("🏆 UH Table Tennis Leaderboard")
+    st.subheader("🏆 Top 10 Leaderboard")
 
-    # Fetch and sort players by Elo (highest first)
-    players_df = get_all_players()  # Uses your existing database query function
+    # Fetch players from database (keep your working query line here)
+    players_df = pd.read_sql("SELECT * FROM players;", engine)
 
     if not players_df.empty:
-        # Sort players by Elo descending
-        sorted_df = players_df.sort_values(by="elo", ascending=False).reset_index(drop=True)
+        # Map database column names flexibly
+        cols_lower = {str(c).lower().replace(" ", "_"): c for c in players_df.columns}
 
-        # 1. Format Ranks with Gold, Silver, Bronze badges
-        rank_labels = []
+        name_col = cols_lower.get('name') or cols_lower.get('player_name') or players_df.columns[0]
+        elo_col = cols_lower.get('elo') or cols_lower.get('rating') or players_df.columns[1]
+        wins_col = cols_lower.get('wins')
+        losses_col = cols_lower.get('losses')
+
+        streak_col = (
+                cols_lower.get('streak') or
+                cols_lower.get('win_streak') or
+                cols_lower.get('current_streak') or
+                cols_lower.get('w_streak')
+        )
+        win_pct_col = (
+                cols_lower.get('win_pct') or
+                cols_lower.get('win_%') or
+                cols_lower.get('win_rate') or
+                cols_lower.get('win_percentage')
+        )
+        matches_col = (
+                cols_lower.get('matches_played') or
+                cols_lower.get('matches') or
+                cols_lower.get('games')
+        )
+
+        sorted_df = players_df.copy()
+
+        # Calculate missing Win % and Matches Played on the fly from Wins & Losses
+        if wins_col and losses_col:
+            sorted_df[wins_col] = pd.to_numeric(sorted_df[wins_col], errors='coerce').fillna(0).astype(int)
+            sorted_df[losses_col] = pd.to_numeric(sorted_df[losses_col], errors='coerce').fillna(0).astype(int)
+
+            if not matches_col:
+                sorted_df["matches_played"] = sorted_df[wins_col] + sorted_df[losses_col]
+                matches_col = "matches_played"
+
+            if not win_pct_col:
+                total_games = sorted_df[wins_col] + sorted_df[losses_col]
+                pct_values = (sorted_df[wins_col] / total_games.replace(0, 1) * 100).round(1)
+                sorted_df["win_pct"] = [f"{pct:.1f}%" if tot > 0 else "0.0%" for pct, tot in
+                                        zip(pct_values, total_games)]
+                win_pct_col = "win_pct"
+
+        # Sort players by Elo descending
+        sorted_df = sorted_df.sort_values(by=elo_col, ascending=False).reset_index(drop=True)
+
+        # 1. Format Medals for Ranks 1, 2, 3
+        ranks = []
         for i in range(1, len(sorted_df) + 1):
             if i == 1:
-                rank_labels.append("🥇 1")
+                ranks.append("🥇 1")
             elif i == 2:
-                rank_labels.append("🥈 2")
+                ranks.append("🥈 2")
             elif i == 3:
-                rank_labels.append("🥉 3")
+                ranks.append("🥉 3")
             else:
-                rank_labels.append(str(i))
+                ranks.append(str(i))
 
-        sorted_df["Rank"] = rank_labels
+        sorted_df["Rank"] = ranks
 
-        # 2. Bold Top 3 Player Names
-        display_df = sorted_df.copy()
-        for idx in range(min(3, len(display_df))):
-            display_df.loc[idx, "name"] = f"**{display_df.loc[idx, 'name']}**"
+        # 2. Build full statistical table
+        display_cols = ["Rank", name_col, elo_col]
+        rename_dict = {"Rank": "Rank", name_col: "Player", elo_col: "Elo Rating"}
 
-        # 3. Render Top 10 Table
-        top_10_df = display_df.head(10)[["Rank", "name", "elo", "matches_played"]]
-        top_10_df.columns = ["Rank", "Player", "Elo Rating", "Matches Played"]
+        if wins_col:
+            display_cols.append(wins_col)
+            rename_dict[wins_col] = "Wins"
+        if losses_col:
+            display_cols.append(losses_col)
+            rename_dict[losses_col] = "Losses"
+        if win_pct_col:
+            display_cols.append(win_pct_col)
+            rename_dict[win_pct_col] = "Win %"
+        if streak_col:
+            display_cols.append(streak_col)
+            rename_dict[streak_col] = "Win Streak"
+        if matches_col:
+            display_cols.append(matches_col)
+            rename_dict[matches_col] = "Matches Played"
 
-        st.markdown("### 🔝 Top 10 Leaderboard")
+        top_10_df = sorted_df.head(10)[display_cols].rename(columns=rename_dict)
+
+
+        # 3. Bold Top 3 Rows cleanly using CSS Styler
+        def highlight_top3(row):
+            if row.name < 3:
+                return ['font-weight: bold'] * len(row)
+            return [''] * len(row)
+
+
+        styled_top_10 = top_10_df.style.apply(highlight_top3, axis=1)
+
         st.dataframe(
-            top_10_df,
+            styled_top_10,
             use_container_width=True,
             hide_index=True
         )
@@ -112,30 +179,37 @@ with tab1:
 
             remaining_df = sorted_df.iloc[10:].copy()
 
-            # Format options for the dropdown list
             dropdown_options = [
-                f"Rank #{row['Rank']} — {row['name']} ({row['elo']} Elo)"
-                for _, row in remaining_df.iterrows()
+                f"Rank #{i + 11} — {row[name_col]} ({row[elo_col]} Elo)"
+                for i, (_, row) in enumerate(remaining_df.iterrows())
             ]
 
-            selected_option = st.selectbox(
+            selected_player = st.selectbox(
                 "Select a player to view details:",
-                options=dropdown_options,
-                index=0
+                options=dropdown_options
             )
 
-            # Display quick stats card for the selected player
-            if selected_option:
-                # Extract player name from option string
-                selected_index = dropdown_options.index(selected_option)
-                player_info = remaining_df.iloc[selected_index]
+            if selected_player:
+                selected_idx = dropdown_options.index(selected_player)
+                player_info = remaining_df.iloc[selected_idx]
 
-                st.info(
-                    f"**Player:** {player_info['name']} | "
-                    f"**Rank:** #{player_info['Rank']} | "
-                    f"**Elo:** {player_info['elo']} | "
-                    f"**Matches Played:** {player_info['matches_played']}"
-                )
+                info_items = [
+                    f"**Player:** {player_info[name_col]}",
+                    f"**Rank:** #{selected_idx + 11}",
+                    f"**Elo:** {player_info[elo_col]}"
+                ]
+                if wins_col:
+                    info_items.append(f"**Wins:** {player_info[wins_col]}")
+                if losses_col:
+                    info_items.append(f"**Losses:** {player_info[losses_col]}")
+                if win_pct_col:
+                    info_items.append(f"**Win %:** {player_info[win_pct_col]}")
+                if streak_col:
+                    info_items.append(f"**Streak:** {player_info[streak_col]}")
+                if matches_col:
+                    info_items.append(f"**Matches Played:** {player_info[matches_col]}")
+
+                st.info(" | ".join(info_items))
     else:
         st.info("No players registered yet. Head to the Registration tab to add players!")
 
