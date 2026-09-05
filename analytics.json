@@ -1,9 +1,8 @@
 {
-    "total_views": 7,
+    "total_views": 6,
     "unique_visitors": [
         "viewer_1",
         "viewer_2",
-        "viewer_3",
-        "local_dev_user"
+        "viewer_3"
     ]
 }

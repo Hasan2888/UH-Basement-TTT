@@ -1,14 +1,14 @@
-import streamlit as st
-import pandas as pd
 import calendar
 import json
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+import pandas as pd
+from sqlalchemy import URL, create_engine, text
+import streamlit as st
 
 # File path for persistent analytics (or use your main database/json file)
 ANALYTICS_FILE = "analytics.json"
+
 
 def load_analytics():
     """Loads view counts from disk."""
@@ -20,13 +20,30 @@ def load_analytics():
             pass
     return {"total_views": 0, "unique_visitors": []}
 
+
 def save_analytics(data):
     """Saves view counts permanently."""
     with open(ANALYTICS_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
+
+def get_client_ip():
+    """Safely extracts client IP from Streamlit headers regardless of letter case."""
+    try:
+        headers = {k.lower(): v for k, v in st.context.headers.items()}
+        if "x-forwarded-for" in headers:
+            return headers["x-forwarded-for"].split(",")[0].strip()
+        if "x-real-ip" in headers:
+            return headers["x-real-ip"].strip()
+    except Exception:
+        pass
+    return "static_fallback_user"
+
+
 # --- Page Setup & UH Branding ---
-st.set_page_config(page_title="UH Table Tennis", page_icon="🏓", layout="centered")
+st.set_page_config(
+    page_title="UH Table Tennis", page_icon="🏓", layout="centered"
+)
 
 # --- TRACK VISITS (Runs once per browser session) ---
 if "visited" not in st.session_state:
@@ -36,17 +53,8 @@ if "visited" not in st.session_state:
     # 1. Increment total view count
     analytics["total_views"] += 1
 
-    # 2. Extract real client IP from Streamlit Cloud headers
-    visitor_ip = None
-    try:
-        if "X-Forwarded-For" in st.context.headers:
-            visitor_ip = st.context.headers["X-Forwarded-For"].split(",")[0].strip()
-    except Exception:
-        pass
-
-    # Static fallback for local development so refreshes aren't treated as new users
-    if not visitor_ip:
-        visitor_ip = "local_dev_user"
+    # 2. Extract real client IP (case-insensitive lookup)
+    visitor_ip = get_client_ip()
 
     # 3. Register unique visitor if unseen
     if visitor_ip not in analytics["unique_visitors"]:
