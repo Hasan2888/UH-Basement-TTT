@@ -518,8 +518,7 @@ with tab5:
         else:
             st.info("No players currently registered in the database.")
 
-            st.divider()
-
+        st.divider()
         # =========================================================
         # 🔄 FEATURE 3: MONTHLY RESET
         # =========================================================
