@@ -1,12 +1,59 @@
 import streamlit as st
 import pandas as pd
 import calendar
+import json
+import os
 from datetime import datetime
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
+# File path for persistent analytics (or use your main database/json file)
+ANALYTICS_FILE = "analytics.json"
+
+def load_analytics():
+    """Loads view counts from disk."""
+    if os.path.exists(ANALYTICS_FILE):
+        try:
+            with open(ANALYTICS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"total_views": 0, "unique_visitors": []}
+
+def save_analytics(data):
+    """Saves view counts permanently."""
+    with open(ANALYTICS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
 # --- Page Setup & UH Branding ---
 st.set_page_config(page_title="UH Table Tennis", page_icon="🏓", layout="centered")
+
+# --- TRACK VISITS (Runs once per browser session) ---
+if "visited" not in st.session_state:
+    st.session_state["visited"] = True
+    analytics = load_analytics()
+
+    # 1. Increment total view count
+    analytics["total_views"] += 1
+
+    # 2. Extract real client IP from Streamlit Cloud headers
+    visitor_ip = None
+    try:
+        if "X-Forwarded-For" in st.context.headers:
+            visitor_ip = st.context.headers["X-Forwarded-For"].split(",")[0].strip()
+    except Exception:
+        pass
+
+    # Static fallback for local development so refreshes aren't treated as new users
+    if not visitor_ip:
+        visitor_ip = "local_dev_user"
+
+    # 3. Register unique visitor if unseen
+    if visitor_ip not in analytics["unique_visitors"]:
+        analytics["unique_visitors"].append(visitor_ip)
+
+    save_analytics(analytics)
+
 
 # UH Red Custom CSS
 st.markdown("""
@@ -337,16 +384,48 @@ with tab4:
 with tab5:
     st.subheader("⚙️ Admin Management")
 
-    # Password Protection
-    # Updated direct lookup
-    admin_pw = st.secrets.get("ADMIN_PASSWORD", "cougars123")
-    input_pw = st.text_input("Enter Admin Password", type="password")
+    # --- ADMIN LOGIN WITH SESSION PERSISTENCE ---
+    if "admin_logged_in" not in st.session_state:
+        st.session_state["admin_logged_in"] = False
 
-    if input_pw == admin_pw:
-        st.success("Admin Access Granted")
+    if not st.session_state["admin_logged_in"]:
+        input_pw = st.text_input("Enter Admin Password", type="password", key="admin_pw_input")
+
+        if st.button("Login"):
+            # .strip() removes any accidental leading/trailing spaces
+            if input_pw.strip() == "Hasan2888":
+                st.session_state["admin_logged_in"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect Password")
+
+    else:
+        # --- AUTHENTICATED ADMIN CONTENT STARTS HERE ---
+        col_status, col_logout = st.columns([4, 1])
+        with col_status:
+            st.success("Admin Access Granted")
+        with col_logout:
+            if st.button("Log Out"):
+                st.session_state["admin_logged_in"] = False
+                st.rerun()
+
         st.divider()
 
-        # Feature 1: Undo Last Match
+        # =========================================================
+        # 📊 APP TRAFFIC ANALYTICS
+        # =========================================================
+        st.subheader("📊 App Traffic Analytics")
+        analytics = load_analytics()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(label="Total App Views (All-Time)", value=analytics.get("total_views", 0))
+        with col2:
+            st.metric(label="Unique Visitors (All-Time)", value=len(analytics.get("unique_visitors", [])))
+        st.divider()
+
+        # =========================================================
+        # ↩️ FEATURE 1: UNDO LAST MATCH
+        # =========================================================
         st.markdown("### ↩️ Undo Last Match")
         with engine.connect() as conn:
             last_match = conn.execute(
@@ -387,21 +466,19 @@ with tab5:
 
         st.divider()
 
-        # Feature 2: Monthly Reset
+        # =========================================================
+        # 🔄 FEATURE 2: MONTHLY RESET
+        # =========================================================
         st.markdown("### 🔄 End of Month Reset")
-        st.caption(
-            "Clears all match logs and resets all player ratings back to 1000. Player names will remain registered.")
+        st.caption("Clears all match logs and resets all player ratings back to 1000.")
 
         confirm_reset = st.checkbox("Confirm season wipe")
         if st.button("Reset Monthly Tournament", type="primary", disabled=not confirm_reset):
             with engine.begin() as conn:
                 conn.execute(text("TRUNCATE TABLE matches;"))
                 conn.execute(text("""
-                    UPDATE players 
-                    SET elo = 1000, wins = 0, losses = 0, games_played = 0, current_streak = 0;
-                """))
+                        UPDATE players
+                        SET elo = 1000, wins = 0, losses = 0, games_played = 0, current_streak = 0;
+                    """))
             st.success("Month successfully reset!")
             st.rerun()
-
-    elif input_pw:
-        st.error("Incorrect Password")
