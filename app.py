@@ -6,7 +6,6 @@ import pandas as pd
 from sqlalchemy import URL, create_engine, text
 import streamlit as st
 
-# File path for persistent analytics (or use your main database/json file)
 ANALYTICS_FILE = "analytics.json"
 
 
@@ -18,26 +17,13 @@ def load_analytics():
                 return json.load(f)
         except Exception:
             pass
-    return {"total_views": 0, "unique_visitors": []}
+    return {"total_views": 0}
 
 
 def save_analytics(data):
     """Saves view counts permanently."""
     with open(ANALYTICS_FILE, "w") as f:
         json.dump(data, f, indent=4)
-
-
-def get_client_ip():
-    """Safely extracts client IP from Streamlit headers regardless of letter case."""
-    try:
-        headers = {k.lower(): v for k, v in st.context.headers.items()}
-        if "x-forwarded-for" in headers:
-            return headers["x-forwarded-for"].split(",")[0].strip()
-        if "x-real-ip" in headers:
-            return headers["x-real-ip"].strip()
-    except Exception:
-        pass
-    return "static_fallback_user"
 
 
 # --- Page Setup & UH Branding ---
@@ -49,17 +35,7 @@ st.set_page_config(
 if "visited" not in st.session_state:
     st.session_state["visited"] = True
     analytics = load_analytics()
-
-    # 1. Increment total view count
-    analytics["total_views"] += 1
-
-    # 2. Extract real client IP (case-insensitive lookup)
-    visitor_ip = get_client_ip()
-
-    # 3. Register unique visitor if unseen
-    if visitor_ip not in analytics["unique_visitors"]:
-        analytics["unique_visitors"].append(visitor_ip)
-
+    analytics["total_views"] = analytics.get("total_views", 0) + 1
     save_analytics(analytics)
 
 
@@ -419,16 +395,28 @@ with tab5:
 
         st.divider()
 
-        # =========================================================
-        # 📊 APP TRAFFIC ANALYTICS
-        # =========================================================
-        st.subheader("📊 App Traffic Analytics")
+        # 📊 APP STATS
+        st.subheader("📊 App Stats")
+
+        # Load total views from JSON
         analytics = load_analytics()
+        total_views = analytics.get("total_views", 0)
+
+        # Query total registered players from database
+        try:
+            with engine.connect() as conn:
+                total_players = conn.execute(
+                    text("SELECT COUNT(*) FROM players;")
+                ).scalar()
+        except Exception:
+            total_players = 0
+
         col1, col2 = st.columns(2)
         with col1:
-            st.metric(label="Total App Views (All-Time)", value=analytics.get("total_views", 0))
+            st.metric(label="Total App Views (All-Time)", value=total_views)
         with col2:
-            st.metric(label="Unique Visitors (All-Time)", value=len(analytics.get("unique_visitors", [])))
+            st.metric(label="Total Registered Players", value=total_players)
+
         st.divider()
 
         # =========================================================
