@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import calendar
+from datetime import datetime
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
@@ -65,9 +67,18 @@ with col_title:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Leaderboard", "Log Match", "Add Player", "Match History", "Admin"])
 
 # --- Tab 1: Leaderboard ---
-# --- Tab 1: Leaderboard ---
 with tab1:
     st.subheader("🏆 Top 10 Leaderboard")
+
+    # --- Monthly Reset Countdown ---
+    today = datetime.now()
+    _, last_day = calendar.monthrange(today.year, today.month)
+    days_left = last_day - today.day
+
+    st.caption(
+        f"⏳ **Monthly Reset:** {days_left} day{'s' if days_left != 1 else ''} remaining"
+    )
+    # -------------------------------
 
     # Fetch players from database (keep your working query line here)
     players_df = pd.read_sql("SELECT * FROM players;", engine)
