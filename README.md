@@ -2,7 +2,7 @@
 
 A full-stack web application designed to track player rankings, match histories, and monthly statistics for the UH Basement Table Tennis community. Built with Python and Streamlit, featuring secure administrative access control and automated monthly reset countdowns.
 
-🌐 **Live Demo:** [UH Table Tennis Leaderboard](https://share.streamlit.io) *(Replace with your live Streamlit Cloud link)*
+🌐 **Live Demo:** [UH Table Tennis Leaderboard](https://uh-basement-ttt-wwbl4xqbhauk6n3ddwhxt.streamlit.app/) *(Replace with your live Streamlit Cloud link)*
 
 ---
 
