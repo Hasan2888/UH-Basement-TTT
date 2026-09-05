@@ -461,9 +461,67 @@ with tab5:
             st.write("No recorded matches to undo.")
 
         st.divider()
+        # =========================================================
+        # 🗑️ FEATURE 3: REMOVE PLAYER
+        # =========================================================
+        st.markdown("### 🗑️ Remove Player")
+        st.caption("Permanently delete duplicate, misspelled, or fraudulent player entries.")
+
+        player_list = []
+        name_col = None
+
+        try:
+            with engine.connect() as conn:
+                # Query all columns to avoid hardcoded column errors
+                players_df = pd.read_sql(text("SELECT * FROM players;"), conn)
+
+                if not players_df.empty:
+                    # Detect which column holds the player names
+                    for col in ["player_name", "name", "username", "player"]:
+                        if col in players_df.columns:
+                            name_col = col
+                            break
+                    if not name_col:
+                        name_col = players_df.columns[0]  # Fallback to first column
+
+                    player_list = sorted(players_df[name_col].dropna().unique().tolist())
+        except Exception as e:
+            st.error(f"Error loading player list: {e}")
+
+        if player_list and name_col:
+            selected_player = st.selectbox("Select player to remove:", player_list)
+            confirm_delete = st.checkbox(f"Confirm permanent deletion of '{selected_player}'")
+
+            if st.button("Remove Player", type="primary", disabled=not confirm_delete):
+                try:
+                    with engine.begin() as conn:
+                        # Clean up related matches first to avoid constraint errors
+                        for match_col in ["winner", "loser", "player1", "player2", "winner_name", "loser_name"]:
+                            try:
+                                conn.execute(
+                                    text(f"DELETE FROM matches WHERE {match_col} = :name;"),
+                                    {"name": selected_player}
+                                )
+                            except Exception:
+                                pass
+
+                        # Delete the player record from players table
+                        conn.execute(
+                            text(f"DELETE FROM players WHERE {name_col} = :name;"),
+                            {"name": selected_player}
+                        )
+
+                    st.success(f"Player '{selected_player}' was successfully removed!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to remove player: {e}")
+        else:
+            st.info("No players currently registered in the database.")
+
+            st.divider()
 
         # =========================================================
-        # 🔄 FEATURE 2: MONTHLY RESET
+        # 🔄 FEATURE 3: MONTHLY RESET
         # =========================================================
         st.markdown("### 🔄 End of Month Reset")
         st.caption("Clears all match logs and resets all player ratings back to 1000.")
