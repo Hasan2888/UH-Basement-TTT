@@ -361,9 +361,9 @@ with tab4:
                     loser_name AS "Loser",
                     CONCAT(winner_sets, ' - ', loser_sets) AS "Score",
                     elo_delta AS "Elo Delta",
-                    to_char(created_at, 'YYYY-MM-DD HH12:MI AM') AS "Timestamp"
+                    created_at
                 FROM matches 
-                ORDER BY created_at DESC
+                ORDER BY id DESC
             """),
             conn
         )
@@ -371,7 +371,21 @@ with tab4:
     if matches_df.empty:
         st.info("No matches played yet.")
     else:
-        st.dataframe(matches_df, use_container_width=True, hide_index=True)
+        # Convert timestamp column to datetime
+        matches_df["created_at"] = pd.to_datetime(matches_df["created_at"])
+
+        # Convert from UTC to local time (America/Chicago = Central Time)
+        if matches_df["created_at"].dt.tz is None:
+            matches_df["created_at"] = matches_df["created_at"].dt.tz_localize("UTC")
+        matches_df["created_at"] = matches_df["created_at"].dt.tz_convert("America/Chicago")
+
+        # Format left-to-right: Time, Date, Month, Year
+        matches_df["Timestamp"] = matches_df["created_at"].dt.strftime("%I:%M %p, %d-%m-%Y")
+
+        # Select and order columns for display
+        display_df = matches_df[["Match ID", "Winner", "Loser", "Score", "Elo Delta", "Timestamp"]]
+
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 # --- Tab 5: Admin Panel ---
 with tab5:
