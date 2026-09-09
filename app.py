@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy import URL, create_engine, text
 import streamlit as st
+from sqlalchemy import text
 
 ANALYTICS_FILE = "analytics.json"
 
@@ -477,7 +478,7 @@ with tab5:
 
                 if not players_df.empty:
                     # Detect which column holds the player names
-                    for col in ["player_name", "name", "username", "player"]:
+                    for col in ["player_name", "name", "username", "player", "full_name"]:
                         if col in players_df.columns:
                             name_col = col
                             break
@@ -494,16 +495,19 @@ with tab5:
 
             if st.button("Remove Player", type="primary", disabled=not confirm_delete):
                 try:
+                    with engine.connect() as conn:
+                        # Check actual column names in matches table first to prevent SQL errors
+                        matches_df = pd.read_sql(text("SELECT * FROM matches LIMIT 0;"), conn)
+                        possible_cols = ["winner", "loser", "player1", "player2", "winner_name", "loser_name"]
+                        valid_match_cols = [col for col in possible_cols if col in matches_df.columns]
+
                     with engine.begin() as conn:
-                        # Clean up related matches first to avoid constraint errors
-                        for match_col in ["winner", "loser", "player1", "player2", "winner_name", "loser_name"]:
-                            try:
-                                conn.execute(
-                                    text(f"DELETE FROM matches WHERE {match_col} = :name;"),
-                                    {"name": selected_player}
-                                )
-                            except Exception:
-                                pass
+                        # Clean up related matches only for columns that exist
+                        for match_col in valid_match_cols:
+                            conn.execute(
+                                text(f"DELETE FROM matches WHERE {match_col} = :name;"),
+                                {"name": selected_player}
+                            )
 
                         # Delete the player record from players table
                         conn.execute(
