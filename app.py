@@ -271,10 +271,11 @@ with tab2:
             with col2:
                 loser = st.selectbox("Loser", player_names, index=1 if len(player_names) > 1 else 0)
 
+            # Added "1-0 (Single Game)" option
             score_choice = st.radio(
                 "Set Score Outcome",
-                options=["2-0 (Sweep)", "2-1 (Decider)"],
-                help="Select 2-0 if unmonitored or exact breakdown is unknown."
+                options=["1-0 (Single Game)", "2-0 (Sweep)", "2-1 (Decider)"],
+                help="Select 1-0 for a single game, 2-0 for a sweep, or 2-1 for a decider."
             )
 
             submitted = st.form_submit_button("Submit Match Result")
@@ -283,7 +284,14 @@ with tab2:
                 if winner == loser:
                     st.error("Winner and Loser cannot be the same person.")
                 else:
-                    winner_sets, loser_sets = (2, 0) if "2-0" in score_choice else (2, 1)
+                    # Updated score mapping to support 1-0 games
+                    if "1-0" in score_choice:
+                        winner_sets, loser_sets = (1, 0)
+                    elif "2-0" in score_choice:
+                        winner_sets, loser_sets = (2, 0)
+                    else:
+                        winner_sets, loser_sets = (2, 1)
+
                     winner_row = players_df[players_df["full_name"] == winner].iloc[0]
                     loser_row = players_df[players_df["full_name"] == loser].iloc[0]
 
