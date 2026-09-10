@@ -6,8 +6,84 @@ import pandas as pd
 from sqlalchemy import URL, create_engine, text
 import streamlit as st
 from sqlalchemy import text
+from datetime import datetime, timezone
+
+
+def apply_elo_decay():
+    """Applies -10 Elo per week to players above 1000 Elo who are inactive for > 7 days."""
+    with engine.begin() as conn:
+        # Fetch last match timestamp per player
+        df = pd.read_sql(
+            text("""
+                SELECT 
+                    p.full_name, 
+                    p.elo, 
+                    MAX(m.created_at) AS last_match_time
+                FROM players p
+                LEFT JOIN matches m 
+                    ON p.full_name = m.winner_name OR p.full_name = m.loser_name
+                GROUP BY p.full_name, p.elo;
+            """),
+            conn
+        )
+
+        now = datetime.now(timezone.utc)
+
+        for _, row in df.iterrows():
+            if row["elo"] <= 1000:
+                continue  # Never decay at or below starting baseline
+
+            last_active = row["last_match_time"]
+            if pd.isna(last_active):
+                continue  # Skip players who haven't played any matches yet
+
+            # Ensure timezone awareness
+            if last_active.tzinfo is None:
+                last_active = last_active.replace(tzinfo=timezone.utc)
+
+            days_inactive = (now - last_active).days
+
+            # Decay applies after 7 days (10 Elo per full week of inactivity)
+            if days_inactive >= 7:
+                weeks_inactive = days_inactive // 7
+                target_elo = max(1000, row["elo"] - (weeks_inactive * 10))
+
+                if target_elo < row["elo"]:
+                    conn.execute(
+                        text("UPDATE players SET elo = :new_elo WHERE full_name = :name;"),
+                        {"new_elo": target_elo, "name": row["full_name"]}
+                    )
 
 ANALYTICS_FILE = "analytics.json"
+
+def get_k_factor(games_played: int) -> int:
+    if games_played < 5:
+        return 50
+    elif games_played < 15:
+        return 35
+    return 20
+
+def calculate_asymmetric_elo(winner_elo, loser_elo, winner_games, loser_games, winner_sets, loser_sets):
+    # Calculate expected win probability
+    exp_winner = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+    exp_loser = 1 - exp_winner
+
+    # Fetch individual K-factors
+    k_winner = get_k_factor(winner_games)
+    k_loser = get_k_factor(loser_games)
+
+    # Optional outcome multiplier (1-0 standard, 2-0 sweep bonus, 2-1 decider penalty)
+    mult = 1.0
+    if winner_sets == 2 and loser_sets == 0:
+        mult = 1.1
+    elif winner_sets == 2 and loser_sets == 1:
+        mult = 0.9
+
+    # Calculate individual deltas
+    winner_delta = max(1, round(k_winner * (1 - exp_winner) * mult))
+    loser_delta = max(1, round(k_loser * exp_loser * mult))
+
+    return winner_delta, loser_delta
 
 
 def load_analytics():
@@ -20,12 +96,10 @@ def load_analytics():
             pass
     return {"total_views": 0}
 
-
 def save_analytics(data):
     """Saves view counts permanently."""
     with open(ANALYTICS_FILE, "w") as f:
         json.dump(data, f, indent=4)
-
 
 # --- Page Setup & UH Branding ---
 st.set_page_config(
@@ -38,7 +112,6 @@ if "visited" not in st.session_state:
     analytics = load_analytics()
     analytics["total_views"] = analytics.get("total_views", 0) + 1
     save_analytics(analytics)
-
 
 # UH Red Custom CSS
 st.markdown("""
@@ -56,7 +129,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-
 # --- Database Engine Setup ---
 @st.cache_resource
 def get_db_engine():
@@ -71,9 +143,7 @@ def get_db_engine():
     )
     return create_engine(db_url, pool_pre_ping=True, connect_args={"connect_timeout": 10})
 
-
 engine = get_db_engine()
-
 
 # --- Helper Functions ---
 def calculate_elo_delta(winner_elo: int, loser_elo: int, winner_sets: int, loser_sets: int) -> int:
@@ -102,6 +172,12 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["Leaderboard", "Log Match", "Add Player"
 with tab1:
     st.subheader("🏆 Top 10 Leaderboard")
 
+    # Trigger automated decay check on tab load
+    try:
+        apply_elo_decay()
+    except Exception as e:
+        st.error(f"Error running Elo decay check: {e}")
+
     # --- Monthly Reset Countdown ---
     today = datetime.now()
     _, last_day = calendar.monthrange(today.year, today.month)
@@ -112,8 +188,8 @@ with tab1:
     )
     # -------------------------------
 
-    # Fetch players from database (keep your working query line here)
     players_df = pd.read_sql("SELECT * FROM players;", engine)
+    matches_df = pd.read_sql("SELECT * FROM matches;", engine)
 
     if not players_df.empty:
         # Map database column names flexibly
@@ -139,120 +215,136 @@ with tab1:
         matches_col = (
                 cols_lower.get('matches_played') or
                 cols_lower.get('matches') or
-                cols_lower.get('games')
+                cols_lower.get('games') or
+                cols_lower.get('games_played')
         )
 
         sorted_df = players_df.copy()
 
-        # Calculate missing Win % and Matches Played on the fly from Wins & Losses
+        # Calculate missing Win % and Matches Played from Wins & Losses
         if wins_col and losses_col:
             sorted_df[wins_col] = pd.to_numeric(sorted_df[wins_col], errors='coerce').fillna(0).astype(int)
             sorted_df[losses_col] = pd.to_numeric(sorted_df[losses_col], errors='coerce').fillna(0).astype(int)
 
-            if not matches_col:
+            if not matches_col or matches_col not in sorted_df.columns:
                 sorted_df["matches_played"] = sorted_df[wins_col] + sorted_df[losses_col]
                 matches_col = "matches_played"
 
-            if not win_pct_col:
+            if not win_pct_col or win_pct_col not in sorted_df.columns:
                 total_games = sorted_df[wins_col] + sorted_df[losses_col]
                 pct_values = (sorted_df[wins_col] / total_games.replace(0, 1) * 100).round(1)
                 sorted_df["win_pct"] = [f"{pct:.1f}%" if tot > 0 else "0.0%" for pct, tot in
                                         zip(pct_values, total_games)]
                 win_pct_col = "win_pct"
 
-        # Sort players by Elo descending
-        sorted_df = sorted_df.sort_values(by=elo_col, ascending=False).reset_index(drop=True)
-
-        # 1. Format Medals for Ranks 1, 2, 3
-        ranks = []
-        for i in range(1, len(sorted_df) + 1):
-            if i == 1:
-                ranks.append("🥇 1")
-            elif i == 2:
-                ranks.append("🥈 2")
-            elif i == 3:
-                ranks.append("🥉 3")
-            else:
-                ranks.append(str(i))
-
-        sorted_df["Rank"] = ranks
-
-        # 2. Build full statistical table
-        display_cols = ["Rank", name_col, elo_col]
-        rename_dict = {"Rank": "Rank", name_col: "Player", elo_col: "Elo Rating"}
-
-        if wins_col:
-            display_cols.append(wins_col)
-            rename_dict[wins_col] = "Wins"
-        if losses_col:
-            display_cols.append(losses_col)
-            rename_dict[losses_col] = "Losses"
-        if win_pct_col:
-            display_cols.append(win_pct_col)
-            rename_dict[win_pct_col] = "Win %"
-        if streak_col:
-            display_cols.append(streak_col)
-            rename_dict[streak_col] = "Win Streak"
-        if matches_col:
-            display_cols.append(matches_col)
-            rename_dict[matches_col] = "Matches Played"
-
-        top_10_df = sorted_df.head(10)[display_cols].rename(columns=rename_dict)
+        # Calculate last match time per player to determine activity
+        now_utc = datetime.now(timezone.utc)
+        last_match_dict = {}
+        if not matches_df.empty and 'created_at' in matches_df.columns:
+            matches_df['created_at'] = pd.to_datetime(matches_df['created_at'])
+            for _, m in matches_df.iterrows():
+                t = m.get('created_at')
+                if pd.notna(t):
+                    if t.tzinfo is None:
+                        t = t.replace(tzinfo=timezone.utc)
+                    for p in [m.get('winner_name'), m.get('loser_name')]:
+                        if p:
+                            last_match_dict[p] = max(last_match_dict.get(p, t), t)
 
 
-        # 3. Bold Top 3 Rows cleanly using CSS Styler
-        def highlight_top3(row):
-            if row.name < 3:
-                return ['font-weight: bold'] * len(row)
-            return [''] * len(row)
+        # Evaluate Status (Calibrating vs Active vs Inactive)
+        def evaluate_player_status(row):
+            p_name = row[name_col]
+            g_count = row[matches_col]
+            last_t = last_match_dict.get(p_name)
+
+            if g_count < 5:
+                return f"Calibrating ({g_count}/5)"
+            if last_t is None:
+                return "Inactive"
+
+            days_since = (now_utc - last_t).days
+            return "Inactive" if days_since >= 7 else "Active"
 
 
-        styled_top_10 = top_10_df.style.apply(highlight_top3, axis=1)
+        sorted_df["Status"] = sorted_df.apply(evaluate_player_status, axis=1)
 
-        st.dataframe(
-            styled_top_10,
-            use_container_width=True,
-            hide_index=True
-        )
+        # 1. Filter Active Calibrated Players (5+ games) & sort by Elo DESC
+        active_calibrated_df = sorted_df[sorted_df["Status"] == "Active"].sort_values(by=elo_col,
+                                                                                      ascending=False).reset_index(
+            drop=True)
+        top_10_active = active_calibrated_df.head(10).copy()
+        lower_active = active_calibrated_df.iloc[10:].copy()
 
-        # 4. Dropdown for Players Ranked 11+
-        if len(sorted_df) > 10:
+        # 2. Filter Calibrating Players (< 5 games)
+        calibrating_df = sorted_df[sorted_df["Status"].str.startswith("Calibrating")].copy()
+
+        # 3. Combine 11+ Active Players and Calibrating Players, sorted strictly by Elo DESC
+        lower_rankings_df = pd.concat([lower_active, calibrating_df]).sort_values(by=elo_col,
+                                                                                  ascending=False).reset_index(
+            drop=True)
+
+        # 4. Filter Inactive Players
+        inactive_df = sorted_df[sorted_df["Status"] == "Inactive"].sort_values(by=elo_col, ascending=False).reset_index(
+            drop=True)
+
+        # Configure display columns
+        display_cols = [name_col, elo_col, "Status"]
+        rename_dict = {name_col: "Player", elo_col: "Elo Rating", "Status": "Status"}
+
+        if wins_col: display_cols.append(wins_col); rename_dict[wins_col] = "Wins"
+        if losses_col: display_cols.append(losses_col); rename_dict[losses_col] = "Losses"
+        if win_pct_col: display_cols.append(win_pct_col); rename_dict[win_pct_col] = "Win %"
+        if streak_col: display_cols.append(streak_col); rename_dict[streak_col] = "Win Streak"
+        if matches_col: display_cols.append(matches_col); rename_dict[matches_col] = "Matches Played"
+
+        # --- DISPLAY 1: TOP 10 LEADERBOARD ---
+        if not top_10_active.empty:
+            ranks = []
+            for i in range(1, len(top_10_active) + 1):
+                if i == 1:
+                    ranks.append("🥇 1")
+                elif i == 2:
+                    ranks.append("🥈 2")
+                elif i == 3:
+                    ranks.append("🥉 3")
+                else:
+                    ranks.append(str(i))
+
+            top_10_active["Rank"] = ranks
+            active_display_cols = ["Rank"] + display_cols
+            active_rename = {"Rank": "Rank", **rename_dict}
+
+            top_10_display = top_10_active[active_display_cols].rename(columns=active_rename)
+
+
+            def highlight_top3(row):
+                if row.name < 3:
+                    return ['font-weight: bold'] * len(row)
+                return [''] * len(row)
+
+
+            styled_top_10 = top_10_display.style.apply(highlight_top3, axis=1)
+            st.dataframe(styled_top_10, use_container_width=True, hide_index=True)
+        else:
+            st.info("No fully calibrated active players yet (requires 5+ games).")
+
+        # --- DISPLAY 2: LOWER RANKINGS & CALIBRATING PLAYERS ---
+        if not lower_rankings_df.empty:
             st.divider()
-            st.markdown("### 📊 Lower Rankings (Ranks 11+)")
+            st.markdown("### 📊 Lower Rankings & Calibrating Players")
+            st.caption("Active players ranked 11+ and calibrating players (< 5 games), ordered by Elo.")
+            lower_display = lower_rankings_df[display_cols].rename(columns=rename_dict)
+            st.dataframe(lower_display, use_container_width=True, hide_index=True)
 
-            remaining_df = sorted_df.iloc[10:].copy()
+        # --- DISPLAY 3: INACTIVE PLAYERS ---
+        if not inactive_df.empty:
+            st.write("")
+            with st.expander("💤 Inactive Players (>7 Days No Matches)", expanded=False):
+                st.caption("Players move here after 7 days without a logged match.")
+                inactive_display = inactive_df[display_cols].rename(columns=rename_dict)
+                st.dataframe(inactive_display, use_container_width=True, hide_index=True)
 
-            dropdown_options = [
-                f"Rank #{i + 11} — {row[name_col]} ({row[elo_col]} Elo)"
-                for i, (_, row) in enumerate(remaining_df.iterrows())
-            ]
-
-            selected_player = st.selectbox(
-                "Select a player to view details:",
-                options=dropdown_options
-            )
-
-            if selected_player:
-                selected_idx = dropdown_options.index(selected_player)
-                player_info = remaining_df.iloc[selected_idx]
-
-                info_items = [
-                    f"**Player:** {player_info[name_col]}",
-                    f"**Rank:** #{selected_idx + 11}",
-                    f"**Elo:** {player_info[elo_col]}"
-                ]
-                if wins_col:
-                    info_items.append(f"**Wins:** {player_info[wins_col]}")
-                if losses_col:
-                    info_items.append(f"**Losses:** {player_info[losses_col]}")
-                if win_pct_col:
-                    info_items.append(f"**Win %:** {player_info[win_pct_col]}")
-                if streak_col:
-                    info_items.append(f"**Streak:** {player_info[streak_col]}")
-                if matches_col:
-                    info_items.append(f"**Matches Played:** {player_info[matches_col]}")
-
-                st.info(" | ".join(info_items))
     else:
         st.info("No players registered yet. Head to the Registration tab to add players!")
 
@@ -267,24 +359,33 @@ with tab2:
         with st.form("log_match_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
-                winner = st.selectbox("Winner", player_names, index=0)
+                winner = st.selectbox(
+                    "Winner",
+                    player_names,
+                    index=None,
+                    placeholder="Select winner..."
+                )
             with col2:
-                loser = st.selectbox("Loser", player_names, index=1 if len(player_names) > 1 else 0)
+                loser = st.selectbox(
+                    "Loser",
+                    player_names,
+                    index=None,
+                    placeholder="Select loser..."
+                )
 
-            # Added "1-0 (Single Game)" option
             score_choice = st.radio(
                 "Set Score Outcome",
-                options=["1-0 (Single Game)", "2-0 (Sweep)", "2-1 (Decider)"],
-                help="Select 1-0 for a single game, 2-0 for a sweep, or 2-1 for a decider."
+                options=["1-0 (Single Game)", "2-0 (Sweep)", "2-1 (Decider)"]
             )
 
             submitted = st.form_submit_button("Submit Match Result")
 
             if submitted:
-                if winner == loser:
+                if not winner or not loser:
+                    st.error("Please select both a winner and a loser before submitting.")
+                elif winner == loser:
                     st.error("Winner and Loser cannot be the same person.")
                 else:
-                    # Updated score mapping to support 1-0 games
                     if "1-0" in score_choice:
                         winner_sets, loser_sets = (1, 0)
                     elif "2-0" in score_choice:
@@ -295,7 +396,15 @@ with tab2:
                     winner_row = players_df[players_df["full_name"] == winner].iloc[0]
                     loser_row = players_df[players_df["full_name"] == loser].iloc[0]
 
-                    delta = calculate_elo_delta(winner_row["elo"], loser_row["elo"], winner_sets, loser_sets)
+                    # Calculate dynamic Elo for each player independently
+                    w_delta, l_delta = calculate_asymmetric_elo(
+                        winner_elo=winner_row["elo"],
+                        loser_elo=loser_row["elo"],
+                        winner_games=winner_row["games_played"],
+                        loser_games=loser_row["games_played"],
+                        winner_sets=winner_sets,
+                        loser_sets=loser_sets
+                    )
 
                     with engine.begin() as conn:
                         conn.execute(
@@ -303,7 +412,7 @@ with tab2:
                                 INSERT INTO matches (winner_name, loser_name, winner_sets, loser_sets, elo_delta)
                                 VALUES (:w, :l, :ws, :ls, :d)
                             """),
-                            {"w": winner, "l": loser, "ws": winner_sets, "ls": loser_sets, "d": delta}
+                            {"w": winner, "l": loser, "ws": winner_sets, "ls": loser_sets, "d": w_delta}
                         )
                         conn.execute(
                             text("""
@@ -311,7 +420,7 @@ with tab2:
                                 SET elo = elo + :d, wins = wins + 1, games_played = games_played + 1, current_streak = current_streak + 1
                                 WHERE full_name = :name
                             """),
-                            {"d": delta, "name": winner}
+                            {"d": w_delta, "name": winner}
                         )
                         conn.execute(
                             text("""
@@ -319,10 +428,10 @@ with tab2:
                                 SET elo = elo - :d, losses = losses + 1, games_played = games_played + 1, current_streak = 0
                                 WHERE full_name = :name
                             """),
-                            {"d": delta, "name": loser}
+                            {"d": l_delta, "name": loser}
                         )
 
-                    st.success(f"Match Logged! {winner} (+{delta}) defeated {loser} (-{delta}).")
+                    st.success(f"Match Logged! {winner} (+{w_delta}) defeated {loser} (-{l_delta}).")
                     st.rerun()
 
 # --- Tab 3: Add Player ---
@@ -442,46 +551,75 @@ with tab5:
 
         st.divider()
 
-        # =========================================================
-        # ↩️ FEATURE 1: UNDO LAST MATCH
-        # =========================================================
-        st.markdown("### ↩️ Undo Last Match")
+        # --- Admin Tool: Undo / Delete Any Match ---
+        st.markdown("### 🚨 Undo / Delete Match")
+        st.caption(
+            "Select any recent match to revert. Reverting subtracts Elo from the winner, restores Elo to the loser, and adjusts win/loss totals.")
+
         with engine.connect() as conn:
-            last_match = conn.execute(
-                text("SELECT id, winner_name, loser_name, elo_delta FROM matches ORDER BY created_at DESC LIMIT 1")
-            ).fetchone()
+            recent_matches = pd.read_sql(
+                text("""
+                    SELECT 
+                        id, 
+                        winner_name, 
+                        loser_name, 
+                        elo_delta, 
+                        CONCAT('Match #', id, ': ', winner_name, ' def. ', loser_name, ' (Delta: ', elo_delta, ')') AS display_label
+                    FROM matches 
+                    ORDER BY id DESC 
+                    LIMIT 50;  -- Fetches the last 50 matches for selection
+                """),
+                conn
+            )
 
-        if last_match:
-            match_id, winner, loser, delta = last_match
-            st.info(f"Most Recent Match: **{winner}** defeated **{loser}** (+/- {delta} Elo)")
+        if recent_matches.empty:
+            st.info("No matches recorded yet to undo.")
+        else:
+            selected_label = st.selectbox(
+                "Select a match to revert:",
+                options=recent_matches["display_label"].tolist(),
+                index=0
+            )
 
-            if st.button("Undo This Match"):
+            if st.button("Delete Selected Match & Rollback Stats"):
+                match_info = recent_matches[recent_matches["display_label"] == selected_label].iloc[0]
+                m_id = int(match_info["id"])
+                winner = match_info["winner_name"]
+                loser = match_info["loser_name"]
+                delta = int(match_info["elo_delta"])
+
                 with engine.begin() as conn:
-                    # Revert Winner Stats
+                    # 1. Rollback Winner stats
                     conn.execute(
                         text("""
                             UPDATE players 
-                            SET elo = elo - :d, wins = wins - 1, games_played = games_played - 1, current_streak = GREATEST(0, current_streak - 1)
+                            SET elo = elo - :d, 
+                                wins = GREATEST(0, wins - 1), 
+                                games_played = GREATEST(0, games_played - 1)
                             WHERE full_name = :name
                         """),
                         {"d": delta, "name": winner}
                     )
-                    # Revert Loser Stats
+                    # 2. Rollback Loser stats
                     conn.execute(
                         text("""
                             UPDATE players 
-                            SET elo = elo + :d, losses = losses - 1, games_played = games_played - 1
+                            SET elo = elo + :d, 
+                                losses = GREATEST(0, losses - 1), 
+                                games_played = GREATEST(0, games_played - 1)
                             WHERE full_name = :name
                         """),
                         {"d": delta, "name": loser}
                     )
-                    # Delete Match Record
-                    conn.execute(text("DELETE FROM matches WHERE id = :id"), {"id": match_id})
+                    # 3. Remove match record
+                    conn.execute(
+                        text("DELETE FROM matches WHERE id = :id;"),
+                        {"id": m_id}
+                    )
 
-                st.success("Last match undone and ratings updated!")
+                st.success(
+                    f"Match #{m_id} reverted! Subtracted {delta} Elo from {winner} and restored {delta} Elo to {loser}.")
                 st.rerun()
-        else:
-            st.write("No recorded matches to undo.")
 
         st.divider()
         # =========================================================
