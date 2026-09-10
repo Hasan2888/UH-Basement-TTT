@@ -164,7 +164,7 @@ col_logo, col_title = st.columns([1, 5])
 with col_logo:
     st.image("UH_logo.jpeg", width=100)  # Matches filename in your project folder
 with col_title:
-    st.title(" UH Basement Table Tennis Tournament 🏓")
+    st.title(" UH Basement Table Tennis Rankings 🏓")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Leaderboard", "Log Match", "Add Player", "Match History", "Admin"])
 
@@ -172,7 +172,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["Leaderboard", "Log Match", "Add Player"
 with tab1:
     st.subheader("🏆 Top 10 Leaderboard")
 
-    # Trigger automated decay check on tab load
+    # Run automated decay check
     try:
         apply_elo_decay()
     except Exception as e:
@@ -221,7 +221,9 @@ with tab1:
 
         sorted_df = players_df.copy()
 
-        # Calculate missing Win % and Matches Played from Wins & Losses
+        # Enforce numeric types across statistics to prevent NaN filtering bugs
+        sorted_df[elo_col] = pd.to_numeric(sorted_df[elo_col], errors='coerce').fillna(1000).astype(int)
+
         if wins_col and losses_col:
             sorted_df[wins_col] = pd.to_numeric(sorted_df[wins_col], errors='coerce').fillna(0).astype(int)
             sorted_df[losses_col] = pd.to_numeric(sorted_df[losses_col], errors='coerce').fillna(0).astype(int)
@@ -229,6 +231,8 @@ with tab1:
             if not matches_col or matches_col not in sorted_df.columns:
                 sorted_df["matches_played"] = sorted_df[wins_col] + sorted_df[losses_col]
                 matches_col = "matches_played"
+            else:
+                sorted_df[matches_col] = pd.to_numeric(sorted_df[matches_col], errors='coerce').fillna(0).astype(int)
 
             if not win_pct_col or win_pct_col not in sorted_df.columns:
                 total_games = sorted_df[wins_col] + sorted_df[losses_col]
@@ -237,7 +241,7 @@ with tab1:
                                         zip(pct_values, total_games)]
                 win_pct_col = "win_pct"
 
-        # Calculate last match time per player to determine activity
+        # Calculate last match time per player
         now_utc = datetime.now(timezone.utc)
         last_match_dict = {}
         if not matches_df.empty and 'created_at' in matches_df.columns:
@@ -252,10 +256,10 @@ with tab1:
                             last_match_dict[p] = max(last_match_dict.get(p, t), t)
 
 
-        # Evaluate Status (Calibrating vs Active vs Inactive)
+        # Evaluate Status safely
         def evaluate_player_status(row):
             p_name = row[name_col]
-            g_count = row[matches_col]
+            g_count = int(row.get(matches_col, 0))
             last_t = last_match_dict.get(p_name)
 
             if g_count < 5:
@@ -269,26 +273,26 @@ with tab1:
 
         sorted_df["Status"] = sorted_df.apply(evaluate_player_status, axis=1)
 
-        # 1. Filter Active Calibrated Players (5+ games) & sort by Elo DESC
+        # 1. Active Calibrated Players (5+ games)
         active_calibrated_df = sorted_df[sorted_df["Status"] == "Active"].sort_values(by=elo_col,
                                                                                       ascending=False).reset_index(
             drop=True)
         top_10_active = active_calibrated_df.head(10).copy()
         lower_active = active_calibrated_df.iloc[10:].copy()
 
-        # 2. Filter Calibrating Players (< 5 games)
-        calibrating_df = sorted_df[sorted_df["Status"].str.startswith("Calibrating")].copy()
+        # 2. Calibrating Players (< 5 games)
+        calibrating_df = sorted_df[sorted_df["Status"].str.startswith("Calibrating", na=False)].copy()
 
-        # 3. Combine 11+ Active Players and Calibrating Players, sorted strictly by Elo DESC
-        lower_rankings_df = pd.concat([lower_active, calibrating_df]).sort_values(by=elo_col,
-                                                                                  ascending=False).reset_index(
-            drop=True)
+        # 3. Combine 11+ Active Players and Calibrating Players sorted strictly by Elo
+        lower_rankings_df = pd.concat([lower_active, calibrating_df], ignore_index=True)
+        if not lower_rankings_df.empty:
+            lower_rankings_df = lower_rankings_df.sort_values(by=elo_col, ascending=False).reset_index(drop=True)
 
-        # 4. Filter Inactive Players
+        # 4. Inactive Players
         inactive_df = sorted_df[sorted_df["Status"] == "Inactive"].sort_values(by=elo_col, ascending=False).reset_index(
             drop=True)
 
-        # Configure display columns
+        # Configure Display Columns
         display_cols = [name_col, elo_col, "Status"]
         rename_dict = {name_col: "Player", elo_col: "Elo Rating", "Status": "Status"}
 
@@ -330,12 +334,19 @@ with tab1:
             st.info("No fully calibrated active players yet (requires 5+ games).")
 
         # --- DISPLAY 2: LOWER RANKINGS & CALIBRATING PLAYERS ---
+        st.divider()
+        st.markdown("### 📊 Lower Rankings & Calibrating Players")
+        st.caption("Active players ranked 11+ and calibrating players (< 5 games), ordered by Elo.")
+
         if not lower_rankings_df.empty:
-            st.divider()
-            st.markdown("### 📊 Lower Rankings & Calibrating Players")
-            st.caption("Active players ranked 11+ and calibrating players (< 5 games), ordered by Elo.")
-            lower_display = lower_rankings_df[display_cols].rename(columns=rename_dict)
+            lower_rankings_df["Rank"] = range(11, 11 + len(lower_rankings_df))
+            lower_display_cols = ["Rank"] + display_cols
+            lower_rename = {"Rank": "Rank", **rename_dict}
+            lower_display = lower_rankings_df[lower_display_cols].rename(columns=lower_rename)
+
             st.dataframe(lower_display, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No players currently in lower rankings or calibration.")
 
         # --- DISPLAY 3: INACTIVE PLAYERS ---
         if not inactive_df.empty:
@@ -552,7 +563,7 @@ with tab5:
         st.divider()
 
         # --- Admin Tool: Undo / Delete Any Match ---
-        st.markdown("### 🚨 Undo / Delete Match")
+        st.subheader("🚨 Undo / Delete Match")
         st.caption(
             "Select any recent match to revert. Reverting subtracts Elo from the winner, restores Elo to the loser, and adjusts win/loss totals.")
 
@@ -567,7 +578,7 @@ with tab5:
                         CONCAT('Match #', id, ': ', winner_name, ' def. ', loser_name, ' (Delta: ', elo_delta, ')') AS display_label
                     FROM matches 
                     ORDER BY id DESC 
-                    LIMIT 50;  -- Fetches the last 50 matches for selection
+                    LIMIT 50;
                 """),
                 conn
             )
@@ -581,7 +592,11 @@ with tab5:
                 index=0
             )
 
-            if st.button("Delete Selected Match & Rollback Stats"):
+            confirm_undo = st.checkbox(
+                f"Confirm revert of '{selected_label}'"
+            )
+
+            if st.button("Delete Selected Match & Rollback Stats", disabled=not confirm_undo):
                 match_info = recent_matches[recent_matches["display_label"] == selected_label].iloc[0]
                 m_id = int(match_info["id"])
                 winner = match_info["winner_name"]
@@ -622,6 +637,54 @@ with tab5:
                 st.rerun()
 
         st.divider()
+
+        # --- Admin Tool: Change Player Name ---
+        st.subheader("✏️ Change Player Name")
+        st.caption("Update a player's display name across all database records and historical matches.")
+
+        with engine.connect() as conn:
+            all_players_df = pd.read_sql(text("SELECT full_name FROM players ORDER BY full_name ASC;"), conn)
+
+        if all_players_df.empty:
+            st.info("No players registered yet.")
+        else:
+            selected_old_name = st.selectbox(
+                "Select player to rename:",
+                options=all_players_df["full_name"].tolist(),
+                key="rename_select"
+            )
+            new_player_name = st.text_input("Enter new full name:", placeholder="e.g. John Doe").strip()
+
+            confirm_rename = st.checkbox(
+                f"Confirm renaming '{selected_old_name}' to '{new_player_name}'" if new_player_name else "Confirm name change"
+            )
+
+            if st.button("Update Player Name", disabled=(not confirm_rename or not new_player_name)):
+                if new_player_name in all_players_df["full_name"].tolist():
+                    st.error(f"A player named '{new_player_name}' already exists!")
+                else:
+                    with engine.begin() as conn:
+                        # 1. Update player table entry
+                        conn.execute(
+                            text("UPDATE players SET full_name = :new WHERE full_name = :old;"),
+                            {"new": new_player_name, "old": selected_old_name}
+                        )
+                        # 2. Update historical match records where they won
+                        conn.execute(
+                            text("UPDATE matches SET winner_name = :new WHERE winner_name = :old;"),
+                            {"new": new_player_name, "old": selected_old_name}
+                        )
+                        # 3. Update historical match records where they lost
+                        conn.execute(
+                            text("UPDATE matches SET loser_name = :new WHERE loser_name = :old;"),
+                            {"new": new_player_name, "old": selected_old_name}
+                        )
+
+                    st.success(f"Successfully renamed '{selected_old_name}' to '{new_player_name}' across all records!")
+                    st.rerun()
+
+        st.divider()
+
         # =========================================================
         # 🗑️ FEATURE 3: REMOVE PLAYER
         # =========================================================
