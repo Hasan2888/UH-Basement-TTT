@@ -642,45 +642,75 @@ with tab5:
         st.subheader("✏️ Change Player Name")
         st.caption("Update a player's display name across all database records and historical matches.")
 
+        # Dynamically determine the name column
+        players_sample = pd.read_sql("SELECT * FROM players LIMIT 1;", engine)
+        cols_lower = {str(c).lower().replace(" ", "_"): c for c in players_sample.columns}
+        p_name_col = cols_lower.get('full_name') or cols_lower.get('name') or cols_lower.get('player_name') or \
+                     players_sample.columns[0]
+
         with engine.connect() as conn:
-            all_players_df = pd.read_sql(text("SELECT full_name FROM players ORDER BY full_name ASC;"), conn)
+            all_players_df = pd.read_sql(text(f"SELECT * FROM players ORDER BY {p_name_col} ASC;"), conn)
 
         if all_players_df.empty:
             st.info("No players registered yet.")
         else:
-            selected_old_name = st.selectbox(
-                "Select player to rename:",
-                options=all_players_df["full_name"].tolist(),
-                key="rename_select"
-            )
-            new_player_name = st.text_input("Enter new full name:", placeholder="e.g. John Doe").strip()
+            with st.form("rename_player_form"):
+                selected_old_name = st.selectbox(
+                    "Select player to rename:",
+                    options=all_players_df[p_name_col].tolist(),
+                    key="rename_select"
+                )
+                new_player_name = st.text_input("Enter new full name:", placeholder="e.g. John Doe")
+                confirm_rename = st.checkbox("Confirm permanent name update")
 
-            confirm_rename = st.checkbox(
-                f"Confirm renaming '{selected_old_name}' to '{new_player_name}'" if new_player_name else "Confirm name change"
-            )
+                submit_rename = st.form_submit_button("Update Player Name")
 
-            if st.button("Update Player Name", disabled=(not confirm_rename or not new_player_name)):
-                if new_player_name in all_players_df["full_name"].tolist():
-                    st.error(f"A player named '{new_player_name}' already exists!")
+            if submit_rename:
+                clean_new_name = new_player_name.strip()
+
+                if not clean_new_name:
+                    st.error("Please enter a valid new name.")
+                elif not confirm_rename:
+                    st.warning("Please check the confirmation box to proceed.")
+                elif clean_new_name in all_players_df[p_name_col].tolist():
+                    st.error(f"A player named '{clean_new_name}' already exists!")
                 else:
                     with engine.begin() as conn:
-                        # 1. Update player table entry
+                        # 1. Fetch old player record and prepare new player row
+                        old_player_row = all_players_df[all_players_df[p_name_col] == selected_old_name].iloc[
+                            0].to_dict()
+                        old_player_row[p_name_col] = clean_new_name
+
+                        # Exclude primary key 'id' to prevent sequence conflicts
+                        if 'id' in old_player_row:
+                            del old_player_row['id']
+
+                        cols = ", ".join(old_player_row.keys())
+                        vals = ", ".join([f":{k}" for k in old_player_row.keys()])
+
+                        # 2. Insert new player row with identical stats
                         conn.execute(
-                            text("UPDATE players SET full_name = :new WHERE full_name = :old;"),
-                            {"new": new_player_name, "old": selected_old_name}
-                        )
-                        # 2. Update historical match records where they won
-                        conn.execute(
-                            text("UPDATE matches SET winner_name = :new WHERE winner_name = :old;"),
-                            {"new": new_player_name, "old": selected_old_name}
-                        )
-                        # 3. Update historical match records where they lost
-                        conn.execute(
-                            text("UPDATE matches SET loser_name = :new WHERE loser_name = :old;"),
-                            {"new": new_player_name, "old": selected_old_name}
+                            text(f"INSERT INTO players ({cols}) VALUES ({vals});"),
+                            old_player_row
                         )
 
-                    st.success(f"Successfully renamed '{selected_old_name}' to '{new_player_name}' across all records!")
+                        # 3. Re-point historical match references to the new name
+                        conn.execute(
+                            text("UPDATE matches SET winner_name = :new WHERE winner_name = :old;"),
+                            {"new": clean_new_name, "old": selected_old_name}
+                        )
+                        conn.execute(
+                            text("UPDATE matches SET loser_name = :new WHERE loser_name = :old;"),
+                            {"new": clean_new_name, "old": selected_old_name}
+                        )
+
+                        # 4. Safely delete old player entry
+                        conn.execute(
+                            text(f"DELETE FROM players WHERE {p_name_col} = :old;"),
+                            {"old": selected_old_name}
+                        )
+
+                    st.success(f"Successfully renamed '{selected_old_name}' to '{clean_new_name}' across all records!")
                     st.rerun()
 
         st.divider()
