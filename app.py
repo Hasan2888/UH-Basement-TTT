@@ -499,8 +499,8 @@ with tab4:
             matches_df["created_at"] = matches_df["created_at"].dt.tz_localize("UTC")
         matches_df["created_at"] = matches_df["created_at"].dt.tz_convert("America/Chicago")
 
-        # Format left-to-right: Time, Date, Month, Year
-        matches_df["Timestamp"] = matches_df["created_at"].dt.strftime("%I:%M %p, %d-%m-%Y")
+        # Format left-to-right: Time,Month,Date,Year
+        matches_df["Timestamp"] = matches_df["created_at"].dt.strftime("%I:%M %p, %m-%d-%Y")
 
         # Select and order columns for display
         display_df = matches_df[["Match ID", "Winner", "Loser", "Score", "Elo Delta", "Timestamp"]]
