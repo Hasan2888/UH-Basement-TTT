@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 
 
 def apply_elo_decay():
-    """Applies -10 Elo per week to players above 1000 Elo who are inactive for > 7 days."""
+    """Applies -5 Elo per week to players above 1000 Elo who are inactive for >= 14 days."""
     with engine.begin() as conn:
         # Fetch last match timestamp per player
         df = pd.read_sql(
-            text("""
+            text(
+                """
                 SELECT 
                     p.full_name, 
                     p.elo, 
@@ -23,8 +24,9 @@ def apply_elo_decay():
                 LEFT JOIN matches m 
                     ON p.full_name = m.winner_name OR p.full_name = m.loser_name
                 GROUP BY p.full_name, p.elo;
-            """),
-            conn
+            """
+            ),
+            conn,
         )
 
         now = datetime.now(timezone.utc)
@@ -43,15 +45,18 @@ def apply_elo_decay():
 
             days_inactive = (now - last_active).days
 
-            # Decay applies after 7 days (10 Elo per full week of inactivity)
-            if days_inactive >= 7:
-                weeks_inactive = days_inactive // 7
-                target_elo = max(1000, row["elo"] - (weeks_inactive * 10))
+            # Decay starts at 14 days (2 weeks): -5 Elo initially, +5 Elo per additional week
+            if days_inactive >= 14:
+                weeks_beyond_grace = (days_inactive - 14) // 7
+                decay_cycles = 1 + weeks_beyond_grace
+                target_elo = max(1000, row["elo"] - (decay_cycles * 5))
 
                 if target_elo < row["elo"]:
                     conn.execute(
-                        text("UPDATE players SET elo = :new_elo WHERE full_name = :name;"),
-                        {"new_elo": target_elo, "name": row["full_name"]}
+                        text(
+                            "UPDATE players SET elo = :new_elo WHERE full_name = :name;"
+                        ),
+                        {"new_elo": target_elo, "name": row["full_name"]},
                     )
 
 ANALYTICS_FILE = "analytics.json"
